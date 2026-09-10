@@ -1,0 +1,42 @@
+{
+  "synthetic_only": true,
+  "versions": {
+    "pdf417gen": "0.8.1",
+    "zxing-cpp": "2.2.0",
+    "Pillow": "11.3.0"
+  },
+  "results": [
+    {
+      "case": "01-texto",
+      "expected_text": "DEMO|NUMERO=0000123456|FIN",
+      "expected_bytes": 26,
+      "expected_hex": "44454d4f7c4e554d45524f3d303030303132333435367c46494e",
+      "decoded_hex": "44454d4f7c4e554d45524f3d303030303132333435367c46494e",
+      "exact_match": true
+    },
+    {
+      "case": "02-salto-linea",
+      "expected_text": "DEMO\nNUMERO=0000123456\nFIN",
+      "expected_bytes": 26,
+      "expected_hex": "44454d4f0a4e554d45524f3d303030303132333435360a46494e",
+      "decoded_hex": "44454d4f0a4e554d45524f3d303030303132333435360a46494e",
+      "exact_match": true
+    },
+    {
+      "case": "03-separador-nulo",
+      "expected_text": "DEMO\u0000NUMERO=0000123456\u0000FIN",
+      "expected_bytes": 26,
+      "expected_hex": "44454d4f004e554d45524f3d303030303132333435360046494e",
+      "decoded_hex": "44454d4f004e554d45524f3d303030303132333435360046494e",
+      "exact_match": true
+    },
+    {
+      "case": "04-separador-grupo",
+      "expected_text": "DEMO\u001dNUMERO=0000123456\u001dFIN",
+      "expected_bytes": 26,
+      "expected_hex": "44454d4f1d4e554d45524f3d303030303132333435361d46494e",
+      "decoded_hex": "44454d4f1d4e554d45524f3d303030303132333435361d46494e",
+      "exact_match": true
+    }
+  ]
+}
