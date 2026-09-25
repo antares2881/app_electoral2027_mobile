@@ -24,6 +24,8 @@ import {
   verificarVotanteRegistrado,
 } from '../../services/consultarService';
 import { sessionStorage } from '../../storage/sessionStorage';
+import { CedulaScanner } from '../../components/CedulaScanner';
+import type { CedulaOrigen, CedulaResultado } from '../../utils/cedulaParser';
 
 type PersonaSource = 'listadovotantes' | 'externa' | null;
 
@@ -136,6 +138,7 @@ export function AgregarScreen() {
   }, []);
 
   const [cedula, setCedula] = useState('');
+  const [modoEscaneo, setModoEscaneo] = useState<CedulaOrigen | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -203,11 +206,23 @@ export function AgregarScreen() {
     clearResultState();
   }
 
-  async function handleConsultar() {
+  function handleAbrirEscaner(modo: CedulaOrigen) {
+    Keyboard.dismiss();
+    setModoEscaneo(modo);
+  }
+
+  function handleCedulaEscaneada(resultado: CedulaResultado) {
+    setCedula(resultado.numero);
+    handleConsultar(resultado.numero);
+  }
+
+  async function handleConsultar(cedulaEscaneada?: string) {
     Keyboard.dismiss();
     setSuccessMessage('');
 
-    if (!cedula.trim()) {
+    const cedulaConsulta = (cedulaEscaneada ?? cedula).trim();
+
+    if (!cedulaConsulta) {
       setError('Ingrese una cédula para consultar.');
       return;
     }
@@ -223,7 +238,7 @@ export function AgregarScreen() {
       }
 
       // try {
-      //   const asistencia = await verificarAsistenciaPorCedula(cedula.trim());
+      //   const asistencia = await verificarAsistenciaPorCedula(cedulaConsulta);
       //   if (asistencia.exists) {
       //     setAsistenciaExistente(true);
       //     setInfoMessage(asistencia.message);
@@ -243,7 +258,7 @@ export function AgregarScreen() {
 
       try {
         const votanteRegistrado = await verificarVotanteRegistrado({
-          cedula: cedula.trim(),
+          cedula: cedulaConsulta,
           candidatoId: session.candidatoId,
           corporacionId: session.corporacionId,
         });
@@ -263,7 +278,7 @@ export function AgregarScreen() {
       }
 
       try {
-        const consultaExterna = await consultarPersonaParaRegistro(cedula.trim());
+        const consultaExterna = await consultarPersonaParaRegistro(cedulaConsulta);
         setPersona(consultaExterna);
         setPersonaSource('externa');
         const successMessage = 'Consulta encontrada. Seleccione un líder y diligencie los campos vacios.';
@@ -390,7 +405,24 @@ export function AgregarScreen() {
             }}
           />
 
-          <TouchableOpacity onPress={handleConsultar} style={styles.button} disabled={loading || saving}>
+          <View style={styles.scanButtonsRow}>
+            <TouchableOpacity
+              onPress={() => handleAbrirEscaner('amarilla')}
+              style={[styles.scanButton, styles.scanButtonAmarilla]}
+              disabled={loading || saving}
+            >
+              <Text style={[styles.scanButtonText, styles.scanButtonTextDark]}>ESCANEAR{'\n'}AMARILLA</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => handleAbrirEscaner('digital')}
+              style={[styles.scanButton, styles.scanButtonDigital]}
+              disabled={loading || saving}
+            >
+              <Text style={styles.scanButtonText}>ESCANEAR{'\n'}DIGITAL</Text>
+            </TouchableOpacity>
+          </View>
+
+          <TouchableOpacity onPress={() => handleConsultar()} style={styles.button} disabled={loading || saving}>
             {loading ? (
               <ActivityIndicator color="#fff" />
             ) : (
@@ -766,6 +798,13 @@ export function AgregarScreen() {
           </KeyboardAvoidingView>
         </Modal>
       </ScrollView>
+
+      <CedulaScanner
+        visible={modoEscaneo !== null}
+        modo={modoEscaneo ?? 'amarilla'}
+        onDetectado={handleCedulaEscaneada}
+        onCerrar={() => setModoEscaneo(null)}
+      />
     </View>
   );
 }
@@ -818,6 +857,34 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     fontSize: 28,
     marginBottom: 12,
+  },
+  scanButtonsRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 12,
+  },
+  scanButton: {
+    flex: 1,
+    minHeight: 52,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 6,
+  },
+  scanButtonAmarilla: {
+    backgroundColor: '#f5c518',
+  },
+  scanButtonDigital: {
+    backgroundColor: '#1e66d8',
+  },
+  scanButtonText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  scanButtonTextDark: {
+    color: '#1a1f2a',
   },
   button: {
     backgroundColor: '#28a745',
