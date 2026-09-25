@@ -15,6 +15,8 @@ export interface CedulaResultado {
   nombres?: string;
   sexo?: string;
   fechaNacimiento?: string; // AAAA-MM-DD
+  /** true si el dígito de control compuesto de la MRZ confirmó la lectura (cédula digital). */
+  verificado?: boolean;
 }
 
 /* ------------------------------------------------------------------ */
@@ -148,6 +150,17 @@ export function parseCedulaDigitalMRZ(textoOCR: string): CedulaResultado | null 
     const numero = opcional.replace(/\D/g, '').replace(/^0+/, '');
     if (numero.length < 5 || numero.length > 10) continue;
 
+    // Dígito de control compuesto (TD1): cubre línea 1 y los datos de la línea 2,
+    // incluido el NUIP. Si coincide, la lectura es confiable.
+    let verificado = false;
+    const l2 = l.substring(inicio, inicio + 30);
+    const l1 = [...lineas.slice(0, i)].reverse().find((x) => /^I[A-Z0-9<]C[O0]L/.test(x) && x.length >= 30);
+    if (l1 && l2.length === 30 && /\d/.test(l2[29])) {
+      const n2 = (a: number, b: number) => aNumerico(l2.substring(a, b));
+      const compuesto = l1.substring(5, 30) + n2(0, 7) + n2(8, 15) + n2(18, 29);
+      verificado = digitoControl(compuesto) === Number(aNumerico(l2[29]));
+    }
+
     // Línea 3 (nombres), si existe
     let primerApellido: string | undefined;
     let segundoApellido: string | undefined;
@@ -175,6 +188,7 @@ export function parseCedulaDigitalMRZ(textoOCR: string): CedulaResultado | null 
       nombres,
       sexo: sexo === 'M' || sexo === 'F' ? sexo : undefined,
       fechaNacimiento: `${siglo}${nacimiento.slice(0, 2)}-${nacimiento.slice(2, 4)}-${nacimiento.slice(4, 6)}`,
+      verificado,
     };
   }
 

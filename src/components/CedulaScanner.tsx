@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Modal,
@@ -8,6 +8,8 @@ import {
   View,
 } from 'react-native';
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from 'expo-camera';
+import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
+import { decodificarPdf417DesdeJpegBase64 } from '../utils/pdf417Decoder';
 import {
   type CedulaOrigen,
   type CedulaResultado,
@@ -49,10 +51,72 @@ export function CedulaScanner({ visible, modo, onDetectado, onCerrar }: Props) {
   const [procesando, setProcesando] = useState(false);
   const [mensaje, setMensaje] = useState<string | null>(null);
   const camaraRef = useRef<CameraView>(null);
+  // Refs a los callbacks para que el ciclo automático use siempre la versión actual
+  const onDetectadoRef = useRef(onDetectado);
+  const onCerrarRef = useRef(onCerrar);
+  onDetectadoRef.current = onDetectado;
+  onCerrarRef.current = onCerrar;
   const bloqueado = useRef(false);
   const ultimoAviso = useRef(0);
+  const [camaraLista, setCamaraLista] = useState(false);
+  const autoActivo = useRef(false);
+  const ocupado = useRef(false);
+  const lecturaPrevia = useRef<string | null>(null);
+
+  const esDigitalAuto = visible && modo === 'digital' && !!permiso?.granted && textExtractor !== null;
+
+  /* ---------- Cédula digital: lectura AUTOMÁTICA de la MRZ ----------
+   * Cada ~1,2 s toma una foto silenciosa, la pasa por OCR y busca las líneas <<<.
+   * Acepta el número si el dígito de control de la MRZ lo confirma, o si sale
+   * igual en dos lecturas seguidas.
+   */
+  useEffect(() => {
+    if (!esDigitalAuto || !camaraLista) return;
+    autoActivo.current = true;
+    lecturaPrevia.current = null;
+    let temporizador: ReturnType<typeof setTimeout> | null = null;
+
+    const ciclo = async () => {
+      if (!autoActivo.current) return;
+      if (!ocupado.current && !bloqueado.current && textExtractor) {
+        ocupado.current = true;
+        try {
+          const foto = await camaraRef.current?.takePictureAsync({ quality: 0.7, shutterSound: false });
+          if (foto?.uri && autoActivo.current) {
+            const lineas = await textExtractor.extractTextFromImage(foto.uri);
+            const r = parseCedulaDigitalMRZ(lineas.join('\n'));
+            if (r && autoActivo.current) {
+              if (r.verificado || lecturaPrevia.current === r.numero) {
+                autoActivo.current = false;
+                entregar(r);
+                return;
+              }
+              lecturaPrevia.current = r.numero;
+            }
+          }
+        } catch {
+          // se reintenta en el siguiente ciclo
+        } finally {
+          ocupado.current = false;
+        }
+      }
+      if (autoActivo.current) temporizador = setTimeout(ciclo, 1200);
+    };
+
+    temporizador = setTimeout(ciclo, 800);
+    return () => {
+      autoActivo.current = false;
+      if (temporizador) clearTimeout(temporizador);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [esDigitalAuto, camaraLista]);
+
+  useEffect(() => {
+    if (!visible) setCamaraLista(false);
+  }, [visible]);
 
   function cerrar() {
+    autoActivo.current = false;
     bloqueado.current = false;
     setMensaje(null);
     setProcesando(false);
@@ -63,8 +127,8 @@ export function CedulaScanner({ visible, modo, onDetectado, onCerrar }: Props) {
     bloqueado.current = true;
     setMensaje(null);
     setProcesando(false);
-    onDetectado(resultado);
-    onCerrar();
+    onDetectadoRef.current(resultado);
+    onCerrarRef.current();
     // se libera al volver a abrir el escáner
     setTimeout(() => {
       bloqueado.current = false;
@@ -73,7 +137,7 @@ export function CedulaScanner({ visible, modo, onDetectado, onCerrar }: Props) {
 
   /* ---------- Cédula amarilla: lectura automática del PDF417 ---------- */
   function alEscanear(r: BarcodeScanningResult) {
-    if (bloqueado.current) return;
+    if (bloqueado.current || procesando) return;
     const resultado = parseCedulaAmarilla(r.data ?? '') ?? parseCedulaAmarilla(r.raw ?? '');
     if (resultado) {
       entregar(resultado);
@@ -84,6 +148,47 @@ export function CedulaScanner({ visible, modo, onDetectado, onCerrar }: Props) {
     if (ahora - ultimoAviso.current > 1500) {
       ultimoAviso.current = ahora;
       setMensaje('Se leyó un código, pero no corresponde a una cédula. Enfoca el código del reverso.');
+    }
+  }
+
+  /* ---------- Cédula amarilla: foto + decodificador JavaScript ---------- */
+  async function capturarPdf417() {
+    try {
+      setProcesando(true);
+      setMensaje(null);
+      const foto = await camaraRef.current?.takePictureAsync({ quality: 1 });
+      if (!foto?.uri) throw new Error('No se obtuvo la foto.');
+
+      const { width: w, height: h } = foto;
+      // 1) Franja central (donde está el recuadro guía)  2) foto completa
+      const intentos = [
+        { crop: { originX: 0, originY: Math.round(h * 0.25), width: w, height: Math.round(h * 0.5) }, ancho: 1800 },
+        { crop: null, ancho: 1600 },
+      ];
+
+      for (const intento of intentos) {
+        let ctx = ImageManipulator.manipulate(foto.uri);
+        if (intento.crop) ctx = ctx.crop(intento.crop);
+        const anchoBase = intento.crop ? intento.crop.width : w;
+        if (anchoBase > intento.ancho) ctx = ctx.resize({ width: intento.ancho });
+        const ref = await ctx.renderAsync();
+        const img = await ref.saveAsync({ base64: true, compress: 0.92, format: SaveFormat.JPEG });
+        if (!img.base64) continue;
+
+        // Deja que se pinte el indicador antes del cálculo pesado
+        await new Promise((r) => setTimeout(r, 30));
+        const texto = decodificarPdf417DesdeJpegBase64(img.base64);
+        const resultado = texto ? parseCedulaAmarilla(texto) : null;
+        if (resultado) {
+          entregar(resultado);
+          return;
+        }
+      }
+      setMensaje('No se pudo leer el código. Acerca la cédula para que el código llene el recuadro, con buena luz y sin reflejos.');
+    } catch {
+      setMensaje('Error al procesar la imagen. Intenta de nuevo.');
+    } finally {
+      setProcesando(false);
     }
   }
 
@@ -141,6 +246,7 @@ export function CedulaScanner({ visible, modo, onDetectado, onCerrar }: Props) {
                 autofocus="on"
                 barcodeScannerSettings={esAmarilla ? { barcodeTypes: ['pdf417'] } : undefined}
                 onBarcodeScanned={esAmarilla ? alEscanear : undefined}
+                onCameraReady={() => setCamaraLista(true)}
               />
             )}
 
@@ -149,15 +255,27 @@ export function CedulaScanner({ visible, modo, onDetectado, onCerrar }: Props) {
               <View style={esAmarilla ? styles.marcoPdf417 : styles.marcoMRZ} />
               <Text style={styles.textoClaro}>
                 {esAmarilla
-                  ? 'Enfoca el código de barras del REVERSO dentro del recuadro.'
-                  : 'Enfoca las 3 líneas con «<<<» de la parte inferior del REVERSO y toca CAPTURAR.'}
+                  ? 'Enfoca el código de barras del REVERSO dentro del recuadro. Si no se lee solo, toca CAPTURAR.'
+                  : esDigitalAuto
+                    ? 'Enfoca las 3 líneas con «<<<» de la parte inferior del REVERSO. Se leerá automáticamente.'
+                    : 'Enfoca las 3 líneas con «<<<» de la parte inferior del REVERSO y toca CAPTURAR.'}
               </Text>
+              {esDigitalAuto && !mensaje && (
+                <View style={styles.buscando}>
+                  <ActivityIndicator color="#ffffff" />
+                  <Text style={styles.textoClaro}>Buscando…</Text>
+                </View>
+              )}
               {!!mensaje && <Text style={styles.error}>{mensaje}</Text>}
             </View>
 
             <View style={styles.acciones}>
-              {!esAmarilla && (
-                <Pressable style={styles.boton} onPress={capturarMRZ} disabled={procesando}>
+              {!esDigitalAuto && (
+                <Pressable
+                  style={styles.boton}
+                  onPress={esAmarilla ? capturarPdf417 : capturarMRZ}
+                  disabled={procesando}
+                >
                   {procesando ? (
                     <ActivityIndicator color="#ffffff" />
                   ) : (
@@ -194,6 +312,7 @@ const styles = StyleSheet.create({
   titulo: { color: '#ffffff', fontSize: 24, fontWeight: '700' },
   marcoPdf417: { width: '92%', aspectRatio: 3.2, borderWidth: 3, borderColor: '#28a745', borderRadius: 12 },
   marcoMRZ: { width: '95%', aspectRatio: 4, borderWidth: 3, borderColor: '#1e66d8', borderRadius: 12 },
+  buscando: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   textoClaro: { color: '#ffffff', textAlign: 'center', fontSize: 16 },
   error: {
     color: '#ffffff',
