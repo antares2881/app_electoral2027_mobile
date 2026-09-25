@@ -8,8 +8,6 @@ import {
   View,
 } from 'react-native';
 import { CameraView, useCameraPermissions, type BarcodeScanningResult } from 'expo-camera';
-import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
-import { decodificarPdf417DesdeJpegBase64 } from '../utils/pdf417Decoder';
 import {
   type CedulaOrigen,
   type CedulaResultado,
@@ -137,7 +135,7 @@ export function CedulaScanner({ visible, modo, onDetectado, onCerrar }: Props) {
 
   /* ---------- Cédula amarilla: lectura automática del PDF417 ---------- */
   function alEscanear(r: BarcodeScanningResult) {
-    if (bloqueado.current || procesando) return;
+    if (bloqueado.current) return;
     const resultado = parseCedulaAmarilla(r.data ?? '') ?? parseCedulaAmarilla(r.raw ?? '');
     if (resultado) {
       entregar(resultado);
@@ -148,47 +146,6 @@ export function CedulaScanner({ visible, modo, onDetectado, onCerrar }: Props) {
     if (ahora - ultimoAviso.current > 1500) {
       ultimoAviso.current = ahora;
       setMensaje('Se leyó un código, pero no corresponde a una cédula. Enfoca el código del reverso.');
-    }
-  }
-
-  /* ---------- Cédula amarilla: foto + decodificador JavaScript ---------- */
-  async function capturarPdf417() {
-    try {
-      setProcesando(true);
-      setMensaje(null);
-      const foto = await camaraRef.current?.takePictureAsync({ quality: 1 });
-      if (!foto?.uri) throw new Error('No se obtuvo la foto.');
-
-      const { width: w, height: h } = foto;
-      // 1) Franja central (donde está el recuadro guía)  2) foto completa
-      const intentos = [
-        { crop: { originX: 0, originY: Math.round(h * 0.25), width: w, height: Math.round(h * 0.5) }, ancho: 1800 },
-        { crop: null, ancho: 1600 },
-      ];
-
-      for (const intento of intentos) {
-        let ctx = ImageManipulator.manipulate(foto.uri);
-        if (intento.crop) ctx = ctx.crop(intento.crop);
-        const anchoBase = intento.crop ? intento.crop.width : w;
-        if (anchoBase > intento.ancho) ctx = ctx.resize({ width: intento.ancho });
-        const ref = await ctx.renderAsync();
-        const img = await ref.saveAsync({ base64: true, compress: 0.92, format: SaveFormat.JPEG });
-        if (!img.base64) continue;
-
-        // Deja que se pinte el indicador antes del cálculo pesado
-        await new Promise((r) => setTimeout(r, 30));
-        const texto = decodificarPdf417DesdeJpegBase64(img.base64);
-        const resultado = texto ? parseCedulaAmarilla(texto) : null;
-        if (resultado) {
-          entregar(resultado);
-          return;
-        }
-      }
-      setMensaje('No se pudo leer el código. Acerca la cédula para que el código llene el recuadro, con buena luz y sin reflejos.');
-    } catch {
-      setMensaje('Error al procesar la imagen. Intenta de nuevo.');
-    } finally {
-      setProcesando(false);
     }
   }
 
@@ -255,7 +212,7 @@ export function CedulaScanner({ visible, modo, onDetectado, onCerrar }: Props) {
               <View style={esAmarilla ? styles.marcoPdf417 : styles.marcoMRZ} />
               <Text style={styles.textoClaro}>
                 {esAmarilla
-                  ? 'Enfoca el código de barras del REVERSO dentro del recuadro. Si no se lee solo, toca CAPTURAR.'
+                  ? 'Enfoca el código de barras del REVERSO dentro del recuadro.'
                   : esDigitalAuto
                     ? 'Enfoca las 3 líneas con «<<<» de la parte inferior del REVERSO. Se leerá automáticamente.'
                     : 'Enfoca las 3 líneas con «<<<» de la parte inferior del REVERSO y toca CAPTURAR.'}
@@ -270,10 +227,10 @@ export function CedulaScanner({ visible, modo, onDetectado, onCerrar }: Props) {
             </View>
 
             <View style={styles.acciones}>
-              {!esDigitalAuto && (
+              {!esAmarilla && !esDigitalAuto && (
                 <Pressable
                   style={styles.boton}
-                  onPress={esAmarilla ? capturarPdf417 : capturarMRZ}
+                  onPress={capturarMRZ}
                   disabled={procesando}
                 >
                   {procesando ? (
